@@ -1,0 +1,281 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PHAI control · TEST</title>
+<!-- B10: Tarek's control page. Plain HTML and JavaScript, no framework. It holds no secret key: only the test system's public
+     address and public key (as the app does). Every action goes through admin-only server functions that check: admin, switched
+     on, second step (6-digit code) used at this sign-in, not idle 30 minutes; each writes one row in the action log. -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<style>
+  :root { --bg:#f6f5f2; --card:#fff; --ink:#1c1c1e; --mute:#6b6b70; --line:#dedcd6; --accent:#8a5a2b; --bad:#b3261e; --ok:#2e7d32; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:var(--bg); color:var(--ink); }
+  .test { background:#c62828; color:#fff; text-align:center; font-weight:800; letter-spacing:.2em; padding:10px; font-size:20px; }
+  header { display:flex; gap:8px; align-items:center; flex-wrap:wrap; padding:12px 16px; border-bottom:1px solid var(--line); background:var(--card); }
+  header b { margin-right:auto; }
+  nav button, button { font:inherit; padding:7px 12px; border:1px solid var(--line); background:var(--card); border-radius:8px; cursor:pointer; }
+  nav button.on { background:var(--accent); color:#fff; border-color:var(--accent); }
+  button.danger { color:var(--bad); border-color:var(--bad); }
+  main { max-width:1100px; margin:0 auto; padding:16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; margin-bottom:14px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(170px, 1fr)); gap:10px; }
+  .num { font-size:26px; font-weight:700; } .lab { color:var(--mute); font-size:13px; }
+  table { width:100%; border-collapse:collapse; font-size:14px; } th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--mute); font-weight:600; } input, select { font:inherit; padding:7px 9px; border:1px solid var(--line); border-radius:8px; }
+  .msg { padding:10px 12px; border-radius:8px; margin:10px 0; } .msg.err { background:#fdecea; color:var(--bad); } .msg.ok { background:#e8f5e9; color:var(--ok); }
+  .once { font-family:ui-monospace, Menlo, monospace; background:#fff8e1; border:1px dashed #c9a227; padding:10px; border-radius:8px; word-break:break-all; }
+  .hide { display:none; } .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; } small { color:var(--mute); }
+  @media (max-width:600px) { main { padding:10px; } .num { font-size:22px; } }
+</style>
+</head>
+<body>
+<div class="test">TEST · phai-test</div>
+<header id="top" class="hide"><b>PHAI control</b>
+  <nav id="tabs"></nav>
+  <button id="signout">Sign out</button>
+</header>
+<main>
+  <div id="note"></div>
+
+  <!-- set-up (one-time link) -->
+  <section id="setup" class="card hide">
+    <h2>Set up your admin login</h2>
+    <p>This link works once, for one hour. Choose your own username and password. Nobody else sees the password.</p>
+    <div class="row"><input id="su-name" placeholder="Your name (optional)"></div><br>
+    <div class="row"><input id="su-user" placeholder="Username (7+ letters)" autocomplete="username"></div><br>
+    <div class="row"><input id="su-pass" type="password" placeholder="Password (12+ characters)" autocomplete="new-password">
+      <input id="su-pass2" type="password" placeholder="Password again" autocomplete="new-password"></div><br>
+    <button id="su-go">Make my admin login</button>
+  </section>
+
+  <!-- sign-in -->
+  <section id="signin" class="card hide">
+    <h2>Sign in</h2>
+    <div class="row"><input id="si-user" placeholder="Username" autocomplete="username">
+      <input id="si-pass" type="password" placeholder="Password" autocomplete="current-password">
+      <button id="si-go">Next</button></div>
+  </section>
+
+  <!-- second step -->
+  <section id="code" class="card hide">
+    <h2 id="code-title">Your 6-digit code</h2>
+    <div id="enrol" class="hide"><p>Add PHAI to Apple Passwords: scan this with your iPhone's camera, or open Passwords → Codes → + and enter the setup key.</p>
+      <img id="qr" alt="Authenticator code" width="200" height="200"><p><small>Setup key: <span id="secret" class="once"></span></small></p></div>
+    <div class="row"><input id="code-in" inputmode="numeric" maxlength="6" placeholder="123456" autocomplete="one-time-code"><button id="code-go">Sign in</button></div>
+  </section>
+
+  <section id="app" class="hide"></section>
+</main>
+<script>
+"use strict";
+// ---------- the system this page talks to (public values only) ----------
+const SYSTEM = { label: "TEST", base: "https://ikoqahfdcbmvoysdyjuw.supabase.co", key: "sb_publishable_2W2CZzxuJbE46DBB3BImaQ_bERrjwaK", domain: "phai.invalid",
+                 billing: "https://supabase.com/dashboard/project/ikoqahfdcbmvoysdyjuw/settings/billing" };
+const IDLE_MS = 30 * 60 * 1000;
+const sb = supabase.createClient(SYSTEM.base, SYSTEM.key, { auth: { persistSession: true, storageKey: "phai-admin-test" } });
+const $ = id => document.getElementById(id);
+// The server keeps files under random ids with no file ending; this asks storage to hand each one over under its real name.
+const withName = (url, name) => url + (url.includes("?") ? "&" : "?") + "download=" + encodeURIComponent(name);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const show = (id, on = true) => $(id).classList.toggle("hide", !on);
+const note = (text, kind = "err") => { $("note").innerHTML = text ? `<div class="msg ${kind}">${esc(text)}</div>` : ""; };
+const userEmail = u => u.toLowerCase().replace(/[\s‐-―−-]/g, "") + "@" + SYSTEM.domain;
+const bytes = n => { n = Number(n || 0); const u = ["B", "KB", "MB", "GB", "TB"]; let i = 0; while (n >= 1024 && i < 4) { n /= 1024; i++; } return n.toFixed(i ? 1 : 0) + " " + u[i]; };
+const when = t => t ? new Date(t).toLocaleString() : "—";
+
+let lastUse = Date.now();
+["click", "keydown"].forEach(e => document.addEventListener(e, () => { lastUse = Date.now(); }));
+setInterval(async () => { if (Date.now() - lastUse > IDLE_MS && !$("app").classList.contains("hide")) { await sb.auth.signOut(); start("Signed out after 30 minutes without use."); } }, 60 * 1000);
+
+async function token() { const { data } = await sb.auth.getSession(); return data.session?.access_token; }
+async function rpc(fn, args = {}) {
+  const r = await fetch(`${SYSTEM.base}/rest/v1/rpc/${fn}`, { method: "POST", headers: { apikey: SYSTEM.key, Authorization: `Bearer ${await token()}`, "Content-Type": "application/json" }, body: JSON.stringify(args) });
+  const text = await r.text(); let j = null; try { j = text ? JSON.parse(text) : null; } catch { j = text; }
+  if (!r.ok) { const m = (j && (j.message || j.error)) || r.status; if (m === "session_expired") { await sb.auth.signOut(); start("Signed out after 30 minutes without use."); } throw new Error(String(m)); }
+  return j;
+}
+async function edge(name, body) {
+  const r = await fetch(`${SYSTEM.base}/functions/v1/${name}`, { method: "POST", headers: { apikey: SYSTEM.key, Authorization: `Bearer ${(await token()) || SYSTEM.key}`, "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const j = await r.json().catch(() => null);
+  if (!r.ok) throw new Error((j && j.error) || String(r.status));
+  return j;
+}
+
+// ---------- start: set-up link, sign-in, second step ----------
+function hideAll() { ["setup", "signin", "code", "app", "top"].forEach(x => show(x, false)); }
+async function start(message) {
+  hideAll(); note(message || "", message ? "ok" : "err");
+  const setup = new URLSearchParams(location.hash.slice(1)).get("setup");
+  if (setup) { show("setup"); return; }
+  const { data } = await sb.auth.getSession();
+  if (!data.session) { show("signin"); return; }
+  const aal = await sb.auth.mfa.getAuthenticatorAssuranceLevel();
+  if (aal.data?.currentLevel !== "aal2") return secondStep();
+  try { await rpc("admin_check"); } catch (e) { await sb.auth.signOut(); show("signin"); note("This login can't open the control page."); return; }
+  openApp();
+}
+$("su-go").onclick = async () => {
+  const token = new URLSearchParams(location.hash.slice(1)).get("setup");
+  const u = $("su-user").value, p = $("su-pass").value;
+  if (p !== $("su-pass2").value) return note("The two passwords differ.");
+  if (p.length < 12) return note("Choose a password of at least 12 characters.");
+  try { await edge("admin-setup", { token, username: u, password: p, name: $("su-name").value }); history.replaceState(null, "", location.pathname); $("su-pass").value = $("su-pass2").value = ""; start("Your admin login is made. Sign in now, then add the 6-digit code."); }
+  catch (e) { note(e.message === "setup_refused" ? "This set-up link has been used or has run out. Ask for a new one." : "Not accepted: " + e.message); }
+};
+$("si-go").onclick = async () => {
+  note("");
+  const { error } = await sb.auth.signInWithPassword({ email: userEmail($("si-user").value), password: $("si-pass").value });
+  $("si-pass").value = "";
+  if (error) return note("That username and password don't match.");
+  secondStep();
+};
+let factorId = null;
+async function secondStep() {
+  hideAll(); show("code");
+  const { data } = await sb.auth.mfa.listFactors();
+  const verified = (data?.totp || []).find(f => f.status === "verified");
+  if (verified) { factorId = verified.id; show("enrol", false); $("code-title").textContent = "Your 6-digit code"; return; }
+  for (const f of (data?.all || [])) if (f.status !== "verified") await sb.auth.mfa.unenroll({ factorId: f.id });
+  const e = await sb.auth.mfa.enroll({ factorType: "totp", friendlyName: "PHAI control " + new Date().toISOString().slice(0, 10), issuer: "PHAI control (test)" });
+  if (e.error) return note("Couldn't start the authenticator: " + e.error.message);
+  factorId = e.data.id; $("qr").src = e.data.totp.qr_code; $("secret").textContent = e.data.totp.secret;
+  $("code-title").textContent = "Add your 6-digit code"; show("enrol");
+}
+$("code-go").onclick = async () => {
+  const code = $("code-in").value.replace(/\D/g, ""); $("code-in").value = "";
+  const c = await sb.auth.mfa.challenge({ factorId }); if (c.error) return note(c.error.message);
+  const v = await sb.auth.mfa.verify({ factorId, challengeId: c.data.id, code });
+  if (v.error) return note("That code is wrong or too old. Try the newest one.");
+  $("secret").textContent = ""; start();
+};
+$("signout").onclick = async () => { await sb.auth.signOut(); start("Signed out."); };
+
+// ---------- the page ----------
+const TABS = [["home", "Home"], ["accounts", "Accounts"], ["practices", "Practices & scans"], ["settings", "Settings"], ["log", "Action log"]];
+function openApp() {
+  hideAll(); show("top"); show("app");
+  $("tabs").innerHTML = TABS.map(([k, t]) => `<button data-t="${k}">${t}</button>`).join(" ");
+  $("tabs").querySelectorAll("button").forEach(b => b.onclick = () => go(b.dataset.t));
+  go("home");
+}
+async function go(tab) {
+  $("tabs").querySelectorAll("button").forEach(b => b.classList.toggle("on", b.dataset.t === tab)); note("");
+  try { await ({ home, accounts, practices, settings, log })[tab](); } catch (e) { note(e.message); }
+}
+async function home() {
+  const o = await rpc("admin_overview");
+  const tile = (n, l) => `<div><div class="num">${esc(n)}</div><div class="lab">${esc(l)}</div></div>`;
+  $("app").innerHTML = `
+    <div class="card"><div class="grid">
+      ${tile(o.surgeons, "surgeons")}${tile(o.patients, "patients")}${tile(o.scans_sent_week, "scans sent this week")}
+      ${tile(o.scans_received_week, "scans received this week")}${tile(o.failed_uploads_week, "failed uploads this week")}
+      ${tile(o.funnel.invites_made + " → " + o.funnel.codes_typed + " → " + o.funnel.patients_who_sent, "invites → codes typed → patients who sent")}
+    </div></div>
+    <div class="card"><h3>Storage</h3><p>All files: <b>${bytes(o.storage_total_bytes)}</b> <small>(the plan includes 100 GB; the exact bill is on the <a href="${SYSTEM.billing}" target="_blank" rel="noopener">billing page</a>)</small></p>
+      <table><tr><th>Practice</th><th>Used</th><th>Limit</th></tr>${o.storage.map(s => `<tr><td>${esc(s.practice)}</td><td>${bytes(s.used)}</td><td>${bytes(s.limit)}</td></tr>`).join("")}</table></div>
+    <div class="card"><h3>Server health</h3><table>
+      ${Object.entries(o.health.last_job_runs || {}).map(([k, v]) => `<tr><td>${esc(k)}</td><td>last run ${when(v)}</td></tr>`).join("")}
+      <tr><td>last notification sent</td><td>${when(o.health.last_push_sent)}</td></tr>
+      <tr><td>storage notices this week</td><td>${esc(o.health.storage_notices_week)}</td></tr>
+      <tr><td>files waiting to be removed</td><td>${esc(o.health.cleanup_queue_waiting)}</td></tr></table></div>
+    <div class="card"><h3>App versions in use</h3>${Object.entries(o.app_builds).map(([b, n]) => `build ${esc(b)}: ${esc(n)}`).join(" · ") || "—"}</div>`;
+}
+async function accounts() {
+  const rows = await rpc("admin_list_accounts");
+  $("app").innerHTML = `
+    <div class="card"><h3>Make a surgeon login</h3><div class="row">
+      <input id="ns-user" placeholder="Username (7+ letters)"><input id="ns-name" placeholder="Surgeon's name"><input id="ns-prac" placeholder="Practice name">
+      <button id="ns-go">Make</button></div><div id="ns-out"></div></div>
+    <div class="card"><h3>Accounts</h3><table><tr><th>Name</th><th>Type</th><th>Username</th><th>Practice</th><th>State</th><th></th></tr>
+    ${rows.map(a => `<tr><td>${esc(a.display_name)}${a.internal ? " <small>(internal tools)</small>" : ""}</td><td>${esc(a.type)}</td><td>${esc(a.username)}</td><td>${esc(a.practice_name)}</td>
+      <td>${esc(a.status)}${a.deletion_requested_at ? " · closing" : ""}</td><td class="row">${a.type === "admin" ? "" : `
+        <button data-a="status" data-id="${a.account_id}" data-v="${a.status === "active" ? "off" : "active"}">${a.status === "active" ? "Switch off" : "Switch on"}</button>
+        <button data-a="reset" data-id="${a.account_id}">Reset password</button>
+        ${a.type === "surgeon" ? `<button data-a="internal" data-id="${a.account_id}" data-v="${!a.internal}">${a.internal ? "Internal off" : "Internal on"}</button>` : ""}
+        ${a.deletion_requested_at ? `<button data-a="undelete" data-id="${a.account_id}">Cancel deletion</button>` : `<button class="danger" data-a="delete" data-id="${a.account_id}">Delete…</button>`}`}</td></tr>`).join("")}
+    </table><div id="acc-out"></div></div>`;
+  $("ns-go").onclick = async () => {
+    try { const r = await edge("admin-create-surgeon", { username: $("ns-user").value, display_name: $("ns-name").value, practice_name: $("ns-prac").value });
+      $("ns-out").innerHTML = `<p>Made. Give these to the surgeon now; the password is shown only this once:</p><div class="once">username: ${esc(r.username)}<br>password: ${esc(r.password)}</div>`; }
+    catch (e) { note("Not made: " + e.message); }
+  };
+  $("app").querySelectorAll("button[data-a]").forEach(b => b.onclick = async () => {
+    const id = b.dataset.id;
+    try {
+      if (b.dataset.a === "status") { await rpc("admin_set_account_status", { p_account: id, p_status: b.dataset.v }); }
+      if (b.dataset.a === "internal") { await rpc("admin_set_internal", { p_account: id, p_internal: b.dataset.v === "true" }); }
+      if (b.dataset.a === "undelete") { await rpc("admin_cancel_deletion", { p_account: id }); }
+      if (b.dataset.a === "delete") { if (prompt("Type DELETE to delete this account (a surgeon's practice closes and goes after 30 days; a patient goes at once).") !== "DELETE") return; await rpc("admin_delete_account", { p_account: id }); }
+      if (b.dataset.a === "reset") { const r = await edge("admin-reset-password", { account_id: id }); await accounts();
+        $("acc-out").innerHTML = `<p>New password, shown only this once:</p><div class="once">${esc(r.password)}</div>`; return; }
+      await accounts(); note("Done.", "ok");
+    } catch (e) { note(e.message); }
+  });
+}
+async function practices() {
+  const ps = await rpc("admin_list_practices");
+  $("app").innerHTML = `<div class="card"><h3>Practices</h3><table><tr><th>Practice</th><th>Surgeons</th><th>Scans</th><th>Storage</th><th>Training consent</th><th></th></tr>
+    ${ps.map(p => `<tr><td>${esc(p.name)}${p.delete_after ? " <small>(closing)</small>" : ""}</td><td>${esc(p.surgeon_count)}</td><td>${esc(p.scan_count)}</td>
+      <td>${bytes(p.storage_used_bytes)} of ${bytes(p.storage_limit_bytes)} <button data-a="limit" data-id="${p.practice_id}">Set limit</button></td>
+      <td><button data-a="tc" data-id="${p.practice_id}" data-v="${!p.training_consent}">${p.training_consent ? "On · switch off" : "Off · switch on"}</button></td>
+      <td><button data-a="open" data-id="${p.practice_id}" data-name="${esc(p.name)}">Folders</button></td></tr>`).join("")}</table></div><div id="drill"></div>`;
+  $("app").querySelectorAll("button[data-a]").forEach(b => b.onclick = async () => {
+    try {
+      if (b.dataset.a === "limit") { const gb = prompt("New storage limit in GB:"); if (!gb) return; await rpc("admin_set_storage_limit", { p_practice: b.dataset.id, p_bytes: Math.round(Number(gb) * 1073741824) }); return practices(); }
+      if (b.dataset.a === "tc") { await rpc("admin_set_training_consent", { p_practice: b.dataset.id, p_on: b.dataset.v === "true" }); return practices(); }
+      if (b.dataset.a === "open") return folders(b.dataset.id, b.dataset.name);
+    } catch (e) { note(e.message); }
+  });
+}
+async function folders(practice, name) {
+  const fs = await rpc("admin_list_folders", { p_practice: practice });
+  $("drill").innerHTML = `<div class="card"><h3>${esc(name)}: patient folders</h3><table><tr><th>No.</th><th>Folder</th><th>Scans</th><th>Made</th><th></th></tr>
+    ${fs.map(f => `<tr><td>${esc(f.patient_number)}</td><td>${esc(f.name)}${f.deleted_at ? " <small>(deleted)</small>" : ""}</td><td>${esc(f.scans)}</td><td>${when(f.created_at)}</td>
+      <td><button data-f="${f.folder_id}" data-name="${esc(f.name)}">Scans</button></td></tr>`).join("")}</table></div><div id="drill2"></div>`;
+  $("drill").querySelectorAll("button[data-f]").forEach(b => b.onclick = () => scans(b.dataset.f, b.dataset.name).catch(e => note(e.message)));
+}
+async function scans(folder, name) {
+  const ss = await rpc("admin_list_scans", { p_folder: folder });
+  $("drill2").innerHTML = `<div class="card"><h3>${esc(name)}: scans</h3><table><tr><th>Sent</th><th>From</th><th>State</th><th>Size</th><th>Photos leave</th><th></th></tr>
+    ${ss.map(s => `<tr><td>${when(s.created_at)}</td><td>${esc(s.source === "clinic" ? "clinic" : "patient's iPhone")}</td><td>${esc(s.status)}</td><td>${bytes(s.total_bytes)}</td>
+      <td>${s.keep_photos ? "kept" : s.photos_gone_at ? "gone " + when(s.photos_gone_at) : when(s.photos_due_at)}</td><td><button data-s="${s.scan_id}">Open</button></td></tr>`).join("")}</table></div><div id="drill3"></div>`;
+  $("drill2").querySelectorAll("button[data-s]").forEach(b => b.onclick = () => openScan(b.dataset.s).catch(e => note(e.message)));
+}
+async function openScan(id) {
+  const o = await rpc("admin_open_scan", { p_scan: id });   // logged: who, when, which scan (D28)
+  const up = o.files.filter(f => f.uploaded);
+  let links = {};
+  if (up.length) { const r = await edge("admin-file-link", { file_ids: up.slice(0, 100).map(f => f.file_id) }); for (const l of r.links) links[l.file_id] = l.url; }
+  $("drill3").innerHTML = `<div class="card"><h3>Scan</h3><p><small>Opened and logged. Links last 5 minutes.</small></p>
+    <p>Made ${when(o.scan.created_at)} · delivered ${when(o.scan.delivered_at)} · enhanced ${when(o.scan.enhanced_at)} · ${bytes(o.scan.total_bytes)} · ${esc(o.scan.capture_type)}</p>
+    <table><tr><th>File</th><th>Kind</th><th>Size</th><th></th></tr>${o.files.map(f => `<tr><td>${esc(f.name)}</td><td>${esc(f.kind)}</td><td>${bytes(f.size_bytes)}</td>
+      <td>${links[f.file_id] ? `<a href="${esc(withName(links[f.file_id], f.name))}" rel="noopener">${f.kind === "model" || f.kind === "enhanced_model" ? "Download the 3D model" : "Save"}</a>` : (f.uploaded ? "" : "<small>not on the server</small>")}</td></tr>`).join("")}</table>
+    <p><small>Files save to your Downloads folder under their real names (frame_0001.heic …); open them with Preview.</small></p></div>`;
+}
+async function settings() {
+  const o = await rpc("admin_overview"); const s = o.settings;
+  const plain = [["maintenance", "Maintenance mode (true/false)"], ["oldest_build", "Oldest app build allowed"], ["code_life_days", "Code life (days)"],
+                 ["photo_days", "Photos leave after Enhance (days)"], ["photo_warning_days", "Warning for never-enhanced scans (day)"],
+                 ["unenhanced_photo_days", "Photos leave without Enhance (days)"], ["patient_daily_scan_cap", "Daily scans per patient"]];
+  const sw = [["device_photo_removal", "Phones and iPads may remove their photos (D19: only after the 2-iPad restore proof)"], ["key_photos_for_training", "Keep key photos for training (D42: not needed)"]];
+  $("app").innerHTML = `<div class="card"><h3>Settings</h3><table>${plain.map(([k, l]) => `<tr><td>${esc(l)}</td><td><input id="s-${k}" value="${esc(JSON.stringify(s[k]))}" size="8"></td><td><button data-k="${k}">Save</button></td></tr>`).join("")}</table></div>
+    <div class="card"><h3>Switches</h3><table>${sw.map(([k, l]) => `<tr><td>${esc(l)}</td><td><b>${s[k] ? "ON" : "OFF"}</b></td><td><button data-sw="${k}" data-v="${!s[k]}">${s[k] ? "Switch off" : "Switch on…"}</button></td></tr>`).join("")}</table>
+      <p><small>Switching one on needs you to type its confirmation; the server checks it too.</small></p></div>`;
+  $("app").querySelectorAll("button[data-k]").forEach(b => b.onclick = async () => {
+    try { await rpc("admin_set_setting", { p_key: b.dataset.k, p_value: JSON.parse($("s-" + b.dataset.k).value) }); note("Saved.", "ok"); } catch (e) { note(e.message); } });
+  $("app").querySelectorAll("button[data-sw]").forEach(b => b.onclick = async () => {
+    const on = b.dataset.v === "true"; let confirm = null;
+    if (on) { confirm = prompt(`To switch it on, type: TURN ON ${b.dataset.sw.toUpperCase()}`); if (!confirm) return; }
+    try { await rpc("admin_set_switch", { p_key: b.dataset.sw, p_on: on, p_confirm: confirm }); settings(); } catch (e) { note(e.message); } });
+}
+async function log() {
+  const rows = await rpc("admin_list_actions", { p_limit: 300 });
+  $("app").innerHTML = `<div class="card"><h3>Action log</h3><p><small>Every control-page action: who, when, what, which record. Nobody can change or remove a line.</small></p>
+    <table><tr><th>When</th><th>Who</th><th>What</th><th>Record</th></tr>${rows.map(r => `<tr><td>${when(r.at)}</td><td><small>${esc((r.actor_account_id || "server").slice(0, 8))}</small></td><td>${esc(r.fn)}</td><td><small>${esc((r.target_id || "").slice(0, 8))}</small></td></tr>`).join("")}</table></div>`;
+}
+start();
+</script>
+</body>
+</html>
