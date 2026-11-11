@@ -4,9 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PHAI control · TEST</title>
-<!-- B10: Tarek's control page. Plain HTML and JavaScript, no framework. It holds no secret key: only the test system's public
-     address and public key (as the app does). Every action goes through admin-only server functions that check: admin, switched
-     on, second step (6-digit code) used at this sign-in, not idle 30 minutes; each writes one row in the action log. -->
+<meta name="robots" content="noindex, nofollow">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
 <style>
   :root { --bg:#f6f5f2; --card:#fff; --ink:#1c1c1e; --mute:#6b6b70; --line:#dedcd6; --accent:#8a5a2b; --bad:#b3261e; --ok:#2e7d32; }
@@ -244,7 +242,7 @@ async function scans(folder, name) {
   $("drill2").querySelectorAll("button[data-s]").forEach(b => b.onclick = () => openScan(b.dataset.s).catch(e => note(e.message)));
 }
 async function openScan(id) {
-  const o = await rpc("admin_open_scan", { p_scan: id });   // logged: who, when, which scan (D28)
+  const o = await rpc("admin_open_scan", { p_scan: id });   // logged: who, when, which scan
   const up = o.files.filter(f => f.uploaded);
   let links = {};
   if (up.length) { const r = await edge("admin-file-link", { file_ids: up.slice(0, 100).map(f => f.file_id) }); for (const l of r.links) links[l.file_id] = l.url; }
@@ -259,7 +257,7 @@ async function settings() {
   const plain = [["maintenance", "Maintenance mode (true/false)"], ["oldest_build", "Oldest app build allowed"], ["code_life_days", "Code life (days)"],
                  ["photo_days", "Photos leave after Enhance (days)"], ["photo_warning_days", "Warning for never-enhanced scans (day)"],
                  ["unenhanced_photo_days", "Photos leave without Enhance (days)"], ["patient_daily_scan_cap", "Daily scans per patient"]];
-  const sw = [["device_photo_removal", "Phones and iPads may remove their photos (D19: only after the 2-iPad restore proof)"], ["key_photos_for_training", "Keep key photos for training (D42: not needed)"]];
+  const sw = [["device_photo_removal", "Phones and iPads may remove their photos (turn on only after the two-iPad restore has been proven)"], ["key_photos_for_training", "Keep key photos for training (not needed; leave off)"]];
   $("app").innerHTML = `<div class="card"><h3>Settings</h3><table>${plain.map(([k, l]) => `<tr><td>${esc(l)}</td><td><input id="s-${k}" value="${esc(JSON.stringify(s[k]))}" size="8"></td><td><button data-k="${k}">Save</button></td></tr>`).join("")}</table></div>
     <div class="card"><h3>Switches</h3><table>${sw.map(([k, l]) => `<tr><td>${esc(l)}</td><td><b>${s[k] ? "ON" : "OFF"}</b></td><td><button data-sw="${k}" data-v="${!s[k]}">${s[k] ? "Switch off" : "Switch on…"}</button></td></tr>`).join("")}</table>
       <p><small>Switching one on needs you to type its confirmation; the server checks it too.</small></p></div>`;
